@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DriftWake — prompt drift detector</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--border:#30363d;--fg:#e6edf3;--muted:#8b949e;--green:#3fb950;--red:#f85149;--amber:#d29922;--accent:#bc8cff}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.5;padding:22px}
+.wrap{max-width:1060px;margin:0 auto}
+h1{font-size:25px}h1 .d{color:var(--accent)}
+.tag{color:var(--muted);font-size:13.5px;margin-top:4px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
+.grid3{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:8px}
+label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px}
+textarea{width:100%;height:170px;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:11px;font:12.5px/1.5 ui-monospace,Consolas,monospace;resize:vertical}
+textarea.tall{height:150px}
+.btnrow{display:flex;gap:10px;margin-top:14px}
+button.primary{background:#8957e5;color:#fff;border:none;border-radius:6px;padding:10px 20px;font-weight:600;cursor:pointer;font-size:14px}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--border);border-radius:6px;padding:9px 14px;cursor:pointer;font-size:13px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:18px;margin-top:16px}
+.score-row{display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+.bignum{font-size:56px;font-weight:700}
+.sub{color:var(--muted);font-size:13px}
+.pill{display:inline-block;border-radius:999px;padding:3px 12px;font-size:12.5px;font-weight:600}
+.ok{background:rgba(63,185,80,.15);color:var(--green)}.warn{background:rgba(210,153,34,.15);color:var(--amber)}.bad{background:rgba(248,81,73,.15);color:var(--red)}
+table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:600}
+.bar{height:8px;background:#21262d;border-radius:4px;overflow:hidden;min-width:120px}
+.bar i{display:block;height:100%;background:var(--green)}
+.warnbox{margin-top:12px;padding:9px 12px;border-radius:6px;background:rgba(210,153,34,.1);color:var(--amber);font-size:12.5px}
+footer{margin-top:20px;color:var(--muted);font-size:12px;text-align:center}
+footer a{color:var(--accent)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Drift<span class="d">Wake</span></h1>
+<div class="tag" id="tagline">Changed your system prompt? Score how much the answers actually moved — deterministic char-bigram Jaccard over matched sample IDs, before vs after. Offline, nothing uploaded.</div>
+
+<div class="grid3">
+  <div><label>BEFORE outputs — JSONL, one per line: {"id": "...", "output": "..."}</label>
+    <textarea id="before" class="tall" placeholder='{"id":"q1","output":"Refund approved within 7 days."}&#10;{"id":"q2","output":"Check Settings > Billing."}'></textarea></div>
+  <div><label>AFTER outputs — same sample IDs replayed against the new prompt</label>
+    <textarea id="after" class="tall" placeholder='{"id":"q1","output":"Refunds are processed within 7 business days."}&#10;{"id":"q2","output":"Go to Settings and open Billing."}'></textarea></div>
+</div>
+
+<div class="btnrow">
+  <button class="primary" onclick="run()">Detect drift</button>
+  <button class="ghost" onclick="loadExample()" id="exBtn">Load example</button>
+</div>
+
+<div id="result" class="hidden">
+  <div class="card score-row">
+    <div><div class="bignum" id="drift">–</div><div class="sub">drift score (0 = identical · 100 = completely rewritten)</div></div>
+    <div><span class="pill" id="verdict">—</span></div>
+    <div class="sub" id="stats"></div>
+    <div class="sub" id="promptDiff"></div>
+  </div>
+  <div id="warnBox" class="warnbox hidden"></div>
+  <div class="card">
+    <table id="tbl"><thead><tr><th>ID</th><th>similarity</th><th style="width:34%">movement</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<footer>DriftWake is the offline web sibling of <a href="https://github.com/qianbrady/promptwake">promptwake</a> (CLI with capture/replay/pin). Same char-bigram Jaccard core. © 2025 MIT.</footer>
+</div>
+
+<script>
+"use strict";
+/* ---- ported verbatim from promptwake/core.py ---- */
+function charBigrams(text){
+  const squeezed=text.split(/\s+/).join("").toLowerCase();
+  const s=new Set();
+  for(let i=0;i<squeezed.length-1;i++) s.add(squeezed.slice(i,i+2));
+  return s;}
+function bigramJaccard(beforeText,afterText){
+  const b=charBigrams(beforeText),a=charBigrams(afterText);
+  if(b.size===0&&a.size===0)return 1.0;
+  if(b.size===0||a.size===0)return 0.0;
+  let inter=0;for(const x of b)if(a.has(x))inter++;
+  const union=b.size+a.size-inter;
+  return inter/union;}
+function parseJsonl(text){
+  const recs=[];let badLines=0;
+  for(const raw of text.split(/\r?\n/)){
+    const line=raw.trim();if(!line)continue;
+    try{const o=JSON.parse(line);
+      const id=String(o.id ?? o.sample_id ?? "");
+      const output=(o.output===undefined||o.output===null)?"":String(o.output);
+      if(!id){badLines++;continue;}
+      recs.push({id,output});
+    }catch(e){badLines++;}}
+  return {recs,badLines};}
+function pairScores(beforeRecs,afterRecs){
+  const afterById={};
+  for(const r of afterRecs) afterById[r.id]=r.output; // last wins
+  const pairs=[];let beforeOnly=0;const matched=new Set();
+  for(const r of beforeRecs){
+    if(!(r.id in afterById)){beforeOnly++;continue;}
+    matched.add(r.id);
+    pairs.push({id:r.id,sim:bigramJaccard(r.output,afterById[r.id])});}
+  const afterOnly=Object.keys(afterById).length-matched.size;
+  return {pairs,beforeOnly,afterOnly};}
+function meanScore(pairs){
+  if(!pairs.length)return 1.0;
+  return pairs.reduce((s,p)=>s+p.sim,0)/pairs.length;}
+function promptSimilarity(a,b){return bigramJaccard(a||"",b||"");}
+
+function run(){
+  const B=parseJsonl(document.getElementById("before").value);
+  const A=parseJsonl(document.getElementById("after").value);
+  document.getElementById("result").classList.remove("hidden");
+  const warn=document.getElementById("warnBox");
+  let warns=[];
+  if(B.badLines)warns.push(B.badLines+" unparseable line(s) skipped in BEFORE");
+  if(A.badLines)warns.push(A.badLines+" unparseable line(s) skipped in AFTER");
+  if(!B.recs.length&&!A.recs.length){warns.push("No valid JSONL records found.");}
+  const {pairs,beforeOnly,afterOnly}=pairScores(B.recs,A.recs);
+  if(beforeOnly)warns.push(beforeOnly+" id(s) exist only in BEFORE — not scored");
+  if(afterOnly)warns.push(afterOnly+" id(s) exist only in AFTER — not scored");
+  if(warns.length){warn.innerHTML=warns.map(x=>"⚠ "+x).join("<br>");warn.classList.remove("hidden");}
+  else warn.classList.add("hidden");
+  const mean=meanScore(pairs);
+  const drift=Math.round((1-mean)*1000)/10;
+  document.getElementById("drift").textContent=Number.isInteger(drift)?drift:drift.toFixed(1);
+  const v=document.getElementById("verdict");
+  let cls,txt;
+  if(drift<=15){cls="ok";txt=LANG==="zh"?"稳定：可以放心上线":"Stable — safe to ship";}
+  else if(drift<=40){cls="warn";txt=LANG==="zh"?"轻微漂移：抽查差异项":"Minor drift — spot-check diffs";}
+  else{cls="bad";txt=LANG==="zh"?"严重漂移：先别上线":"Major drift — do not ship yet";}
+  v.className="pill "+cls;v.textContent=txt;
+  document.getElementById("stats").innerHTML=
+    (LANG==="zh"?`配对 ${pairs.length} 条 · 平均相似度 ${(mean*100).toFixed(1)}%`:`${pairs.length} pair(s) · mean similarity ${(mean*100).toFixed(1)}%`);
+  const bp=document.getElementById("beforePrompt"),ap=document.getElementById("afterPrompt");
+  const tbody=document.querySelector("#tbl tbody");tbody.innerHTML="";
+  [...pairs].sort((a,b)=>a.sim-b.sim).forEach(p=>{
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${esc(p.id)}</td><td>${(p.sim*100).toFixed(1)}%</td>`+
+      `<td><div class="bar"><i style="width:${Math.round((1-p.sim)*100)}%;background:${p.sim<0.6?"#f85149":p.sim<0.85?"#d29922":"#3fb950"}"></i></div></td>`;
+    tbody.appendChild(tr);});}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+let LANG="en";
+function loadExample(){
+  document.getElementById("before").value=[
+    '{"id":"q1","output":"Refund is approved if requested within 7 days of purchase."}',
+    '{"id":"q2","output":"Open Settings, tap Billing, then View invoices."}',
+    '{"id":"q3","output":"Certificates are issued within 48 hours after completion."}'].join("\n");
+  document.getElementById("after").value=[
+    '{"id":"q1","output":"Refunds are processed within 7 business days of the purchase date."}',
+    '{"id":"q2","output":"To see your invoices, go to Settings and open the Billing tab."}',
+    '{"id":"q3","output":"Your certificate will arrive within 48 hours once you finish."}'].join("\n");
+  run();}
+document.getElementById("tagline").addEventListener("click",()=>{LANG=LANG==="en"?"zh":"en";
+  document.getElementById("tagline").textContent=LANG==="zh"
+   ?"刚改了系统提示词？用确定性字符 bigram Jaccard 给「答案实际动了多少」打分——按样本 ID 配对，纯离线。"
+   :document.getElementById("tagline").dataset.en||document.getElementById("tagline").textContent;
+  if(LANG==="en")location.reload();});
+</script>
+</body>
+</html>
