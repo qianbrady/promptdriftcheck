@@ -1,26 +1,41 @@
 # PromptDriftCheck
 
-Changed your system prompt? Paste the outputs you collected **before** and **after**, get an honest 0–100 drift score across matched sample IDs. Deterministic char-bigram Jaccard — same engine as the CLI tool [promptwake](https://github.com/qianbrady/promptwake).
+![License](https://img.shields.io/badge/license-MIT-green) ![Offline](https://img.shields.io/badge/network-none-blue) ![Live](https://img.shields.io/badge/try%20it-online-8A2BE2)
 
-**Live tool:** https://qianbrady.github.io/promptdriftcheck/ · 纯离线单文件，内容不出浏览器。
+Score how much your LLM outputs moved after a system prompt change (0-100 drift).
 
-## How it works
+**Try it now:** <https://qianbrady.github.io/promptdriftcheck/> - single-file web tool, nothing leaves your browser.
 
-1. Collect real outputs under your OLD prompt as JSONL: `{"id": "...", "output": "..."}` per line
-2. Replay the same sample IDs against your NEW prompt
-3. Paste both sides → every matched ID is scored by character-bigram Jaccard similarity; unmatched IDs are flagged, not silently dropped
+## Install
 
-Drift score `= (1 − mean_similarity) × 100`. Verdict bands: ≤15 stable · ≤40 minor · >40 major.
+No dependencies. Grab the file:
 
-## Fidelity
+```bash
+git clone https://github.com/qianbrady/promptdriftcheck.git
+```
 
-Ported verbatim from `promptwake/core.py` and verified side-by-side in CI-style runs:
-mean score matches the Python original to all decimal places on synthetic suites (e.g. 0.4624468731026108), including empty-set edge rules.
+Then open `index.html` in any browser.
 
-## Run locally
+## Quickstart
 
-Open `index.html` in any browser. No build step, no network.
+1. Open the live page (or local `index.html`)
+2. Paste your content into the input box
+3. Press the primary button
+4. Read the score / result panel
+
+## Usage
+
+```
+Input : your pasted text (see placeholder for exact format)
+Output: score panel + per-item breakdown + copyable Markdown where applicable
+```
+
+Deterministic char-bigram Jaccard, matched by sample ID; unmatched IDs flagged, never dropped.
+
+## Contributing
+
+Issues and PRs welcome - this is a zero-dependency static page, so any text editor is a complete dev environment.
 
 ## License
 
-MIT © 2025
+[MIT](LICENSE) (c) 2025
